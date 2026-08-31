@@ -14,6 +14,13 @@ export type EndFrameSource = Exclude<FrameSource, "inherit">;
 
 export type StoryState = Record<string, string | number | boolean>;
 
+/**
+ * Who wrote a scene. Authored scenes are the story the creator built and published;
+ * generated ones were improvised by infinite mode while somebody was playing, and are
+ * deliberately invisible to the studio, to publishing, and to version snapshots.
+ */
+export type ContentOrigin = "authored" | "generated";
+
 export interface StoryNode {
   id: string;
   title: string;
@@ -25,6 +32,7 @@ export interface StoryNode {
   renderStatus: RenderStatus;
   videoUrl?: string;
   position: { x: number; y: number };
+  origin: ContentOrigin;
 
   /** Author-set generation inputs. Chaining is opt-in, so both default to "none". */
   startImageSource: FrameSource;
@@ -73,6 +81,21 @@ export interface RenderJobUpdate {
   videoUrl?: string;
 }
 
+/**
+ * A branch infinite mode is willing to offer, which may not have been walked yet.
+ *
+ * `toNodeId` is absent until some player takes it and pays for the scene behind it.
+ * Once set, it is set for everyone: branches are canonical, so the second player down
+ * this path replays a finished video instead of generating a new one.
+ */
+export interface GeneratedChoice {
+  id: string;
+  fromNodeId: string;
+  label: string;
+  hint: string;
+  toNodeId?: string;
+}
+
 export interface StoryGame {
   id: string;
   slug: string;
@@ -84,6 +107,8 @@ export interface StoryGame {
   status: GameStatus;
   startNodeId: string;
   storyBible: string;
+  /** When true, the player is offered improvised branches wherever the author left off. */
+  infiniteMode: boolean;
   nodes: StoryNode[];
   choices: StoryChoice[];
   updatedAt: string;

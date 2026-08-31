@@ -21,6 +21,11 @@ const deleteSchema = z.object({
   gameId: z.uuid(),
 });
 
+const infiniteModeSchema = z.object({
+  gameId: z.uuid(),
+  enabled: z.boolean(),
+});
+
 const stateValue = z.union([z.string(), z.number(), z.boolean()]);
 const gameSchema = z.object({
   id: z.uuid(),
@@ -117,6 +122,42 @@ export async function deleteStoryAction(
 
   revalidatePath("/");
   return { status: "success", message: "Story deleted." };
+}
+
+/**
+ * Turn infinite mode on or off for a story.
+ *
+ * Deliberately not part of save_story_game: that call rewrites the authored graph, and
+ * this is a property of the story rather than of the graph. Keeping it separate also
+ * means an autosave carrying a stale copy of the flag can never flip it back.
+ */
+export async function setInfiniteModeAction(
+  gameId: string,
+  enabled: boolean,
+): Promise<StoryActionState> {
+  const parsed = infiniteModeSchema.safeParse({ gameId, enabled });
+  if (!parsed.success) return { status: "error", message: "Invalid story." };
+
+  const supabase = await createSupabaseServerClient();
+  if (!supabase) return { status: "error", message: "Supabase is not configured." };
+  const { data: userData } = await supabase.auth.getUser();
+  if (!userData.user) return { status: "error", message: "Your session expired. Sign in again." };
+
+  const { data, error } = await supabase
+    .from("games")
+    .update({ infinite_mode: parsed.data.enabled })
+    .eq("id", parsed.data.gameId)
+    .eq("creator_id", userData.user.id)
+    .select("id")
+    .maybeSingle();
+
+  if (error) return { status: "error", message: error.message };
+  if (!data) return { status: "error", message: "Story not found or not owned by you." };
+
+  return {
+    status: "success",
+    message: parsed.data.enabled ? "Infinite mode on" : "Infinite mode off",
+  };
 }
 
 export async function saveStoryAction(

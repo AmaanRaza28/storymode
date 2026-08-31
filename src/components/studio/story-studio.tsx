@@ -22,6 +22,7 @@ import {
   CircleCheckIcon,
   FilmIcon,
   GitBranchIcon,
+  InfinityIcon,
   Maximize2Icon,
   PlayIcon,
   PlusIcon,
@@ -30,7 +31,7 @@ import {
   SparklesIcon,
   Trash2Icon,
 } from "lucide-react";
-import { saveStoryAction } from "@/app/story-actions";
+import { saveStoryAction, setInfiniteModeAction } from "@/app/story-actions";
 import { SceneContinuity } from "@/components/studio/scene-continuity";
 import { Badge } from "@/components/ui/badge";
 import { Button, buttonVariants } from "@/components/ui/button";
@@ -177,6 +178,7 @@ export function StoryStudio({ initialGame }: { initialGame: StoryGame }) {
   const [renderError, setRenderError] = useState<string | null>(null);
   const [renderNotice, setRenderNotice] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [togglingInfinite, setTogglingInfinite] = useState(false);
   const [saveMessage, setSaveMessage] = useState("Loaded from Supabase");
   // Autosave tracks edits by revision: `revision` counts author edits, `syncedRevision`
   // is the newest revision persisted, and `failedRevision` parks a rejected attempt.
@@ -299,6 +301,7 @@ export function StoryStudio({ initialGame }: { initialGame: StoryGame }) {
           tone: "signal",
           durationSeconds: 5,
           renderStatus: "draft",
+          origin: "authored",
           startImageSource: "none",
           endImageSource: "none",
           position: { x: maxX + 340, y: 420 },
@@ -616,6 +619,24 @@ export function StoryStudio({ initialGame }: { initialGame: StoryGame }) {
     selectNode(initialGame.startNodeId);
   }
 
+  /**
+   * Infinite mode is saved on its own, not through the graph autosave: it is a property
+   * of the story rather than of the scenes, and every generated beat it allows costs the
+   * author money, so it should never be flipped as a side effect of an edit.
+   */
+  async function toggleInfiniteMode() {
+    const next = !game.infiniteMode;
+    setTogglingInfinite(true);
+    const result = await setInfiniteModeAction(game.id, next);
+    setTogglingInfinite(false);
+    if (result.status === "success") {
+      setGame((current) => ({ ...current, infiniteMode: next }));
+      setSaveMessage(result.message ?? "Saved");
+      return;
+    }
+    setSaveMessage(result.message ?? "Could not change infinite mode");
+  }
+
   async function togglePublish() {
     if (game.status === "draft" && !isPublishable(game)) return;
     await persist({ status: game.status === "published" ? "draft" : "published", revalidate: true });
@@ -666,6 +687,25 @@ export function StoryStudio({ initialGame }: { initialGame: StoryGame }) {
             <PlayIcon data-icon="inline-start" />
             Preview
           </Link>
+          <Button
+            size="sm"
+            variant={game.infiniteMode ? "secondary" : "outline"}
+            onClick={toggleInfiniteMode}
+            disabled={togglingInfinite}
+            aria-pressed={game.infiniteMode}
+            title={
+              game.infiniteMode
+                ? "Players are offered improvised branches past your endings"
+                : "Let players keep going past your endings, with scenes generated as they play"
+            }
+          >
+            {togglingInfinite ? (
+              <Spinner data-icon="inline-start" />
+            ) : (
+              <InfinityIcon data-icon="inline-start" />
+            )}
+            Infinite {game.infiniteMode ? "on" : "off"}
+          </Button>
           <Button size="sm" onClick={togglePublish} disabled={saving || (game.status === "draft" && !isPublishable(game))}>
             <CheckIcon data-icon="inline-start" />
             {game.status === "published" ? "Published" : "Publish"}

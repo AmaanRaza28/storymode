@@ -18,6 +18,7 @@ type GameRow = {
   status: "draft" | "published";
   start_node_id: string | null;
   story_bible: unknown;
+  infinite_mode: boolean;
   updated_at: string;
 };
 
@@ -75,17 +76,21 @@ export async function getStoryGameBySlug(slug: string): Promise<StoryGame | null
 
   const { data: rawGame, error } = await supabase
     .from("games")
-    .select("id,creator_id,slug,title,logline,description,genre,status,start_node_id,story_bible,updated_at")
+    .select("id,creator_id,slug,title,logline,description,genre,status,start_node_id,story_bible,infinite_mode,updated_at")
     .eq("slug", slug)
     .maybeSingle();
   if (error || !rawGame) return null;
   const game = rawGame as GameRow;
 
   const [nodesResult, choicesResult, profileResult] = await Promise.all([
+    // Only the authored graph is loaded here. Infinite mode's scenes are discovered a
+    // branch at a time through /api/infinite: a story that has been played for a while
+    // can hold thousands of them, and none are reachable until their branch is taken.
     supabase
       .from("story_nodes")
       .select(nodeColumns)
       .eq("game_id", game.id)
+      .eq("origin", "authored")
       .order("created_at"),
     supabase
       .from("story_choices")
@@ -107,6 +112,7 @@ export async function getStoryGameBySlug(slug: string): Promise<StoryGame | null
     renderStatus: node.render_status,
     ...(node.video_url ? { videoUrl: node.video_url } : {}),
     position: { x: node.position_x, y: node.position_y },
+    origin: "authored",
     startImageSource: frameSources.has(node.start_image_source) ? node.start_image_source : "none",
     // 'inherit' is rejected by a check constraint on the column, so anything unexpected
     // here reads as "no end frame" rather than as a start-frame source.
@@ -141,6 +147,7 @@ export async function getStoryGameBySlug(slug: string): Promise<StoryGame | null
     status: game.status,
     startNodeId: game.start_node_id ?? nodes[0].id,
     storyBible: storyBibleText(game.story_bible),
+    infiniteMode: game.infinite_mode,
     nodes,
     choices,
     updatedAt: new Date(game.updated_at).toLocaleString(),
