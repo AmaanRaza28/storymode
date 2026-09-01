@@ -176,8 +176,8 @@ export function StoryPlayer({ game }: { game: StoryGame }) {
     return () => window.clearInterval(interval);
   }, [currentNode.id, currentNode.durationSeconds, currentNode.videoUrl, paused]);
 
-  // Scenes loop, so take the furthest point reached: rewinding the video must not
-  // re-lock choices the viewer has already been offered.
+  // Take the furthest point reached: rewinding the video must not re-lock choices
+  // the viewer has already been offered.
   const handleProgress = useCallback((percent: number) => {
     setProgress((value) => Math.max(value, percent));
   }, []);

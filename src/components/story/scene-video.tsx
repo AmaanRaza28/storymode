@@ -118,7 +118,6 @@ export function SceneVideo({
             autoPlay={isActive && !paused}
             playsInline
             muted={muted}
-            loop
             preload="auto"
             aria-hidden={isActive ? undefined : true}
             onCanPlay={() => handleReadiness(slot)}
