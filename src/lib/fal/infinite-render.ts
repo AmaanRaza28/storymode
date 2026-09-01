@@ -15,7 +15,9 @@ import type { RenderResolution } from "@/lib/story/types";
  * No `webhookUrl` is passed: the completion is handled here, and giving fal a webhook as
  * well would have two writers racing to finish the same job.
  */
-const ENDPOINT = "minimax/h3-max/text-to-video";
+const TEXT_ENDPOINT = "minimax/h3-max/text-to-video";
+/** Reached whenever the previous shot has a closing still, which for a played story is always. */
+const IMAGE_ENDPOINT = "minimax/h3-max/image-to-video";
 
 /**
  * Infinite scenes are the cheap tier on purpose. At 768P a generated beat costs $0.40
@@ -37,6 +39,13 @@ interface RenderRequest {
   nodeId: string;
   prompt: string;
   requestedBy: string;
+  /**
+   * The closing frame of the scene the player is watching, when it could be extracted.
+   * Continuity is the default here rather than an author's choice: a generated shot has
+   * no set dressing to fall back on but the one it cuts from, and a story that re-rolls
+   * its cast every five seconds reads as five-second clips rather than as a story.
+   */
+  startImageUrl?: string;
 }
 
 function videoUrlFrom(output: unknown): string | undefined {
@@ -49,7 +58,7 @@ function videoUrlFrom(output: unknown): string | undefined {
 
 export async function renderGeneratedScene(
   admin: SupabaseClient,
-  { gameId, nodeId, prompt, requestedBy }: RenderRequest,
+  { gameId, nodeId, prompt, requestedBy, startImageUrl }: RenderRequest,
 ): Promise<RenderResult> {
   const input = {
     prompt,
@@ -57,7 +66,11 @@ export async function renderGeneratedScene(
     resolution: INFINITE_RESOLUTION,
     prompt_expansion_mode: "balanced",
     enable_safety_checker: true,
+    ...(startImageUrl ? { image_url: startImageUrl } : {}),
   };
+  // Only the image-to-video endpoint takes a still at all, so the frame decides which
+  // model the beat is rendered by.
+  const endpoint = startImageUrl ? IMAGE_ENDPOINT : TEXT_ENDPOINT;
 
   // The job row exists before the spend does, so a render that dies mid-flight is still
   // attributable to the player who triggered it when the spend window is next checked.
@@ -67,7 +80,7 @@ export async function renderGeneratedScene(
     game_id: gameId,
     node_id: nodeId,
     provider: "fal",
-    model: ENDPOINT,
+    model: endpoint,
     status: "rendering",
     requested_by: requestedBy,
     for_infinite: true,
@@ -82,7 +95,7 @@ export async function renderGeneratedScene(
     .eq("game_id", gameId);
 
   try {
-    const result = await fal.subscribe(ENDPOINT, {
+    const result = await fal.subscribe(endpoint, {
       input,
       timeout: RENDER_TIMEOUT_MS,
       onEnqueue: (requestId) => {

@@ -5,6 +5,7 @@ import {
   INFINITE_DURATION_SECONDS,
   renderGeneratedScene,
 } from "@/lib/fal/infinite-render";
+import { ensureLastFrame } from "@/lib/fal/last-frame";
 import {
   generateBranches,
   generateScene,
@@ -84,10 +85,13 @@ interface NodeRow {
   duration_seconds: number;
   render_status: StoryNode["renderStatus"];
   video_url: string | null;
+  start_image_source: StoryNode["startImageSource"];
+  start_image_from_node_id: string | null;
 }
 
 const nodeColumns =
-  "id,title,eyebrow,narrative,video_prompt,tone,duration_seconds,render_status,video_url";
+  "id,title,eyebrow,narrative,video_prompt,tone,duration_seconds,render_status,video_url," +
+  "start_image_source,start_image_from_node_id";
 
 function storyBibleText(value: unknown) {
   if (typeof value === "string") return value;
@@ -111,7 +115,12 @@ function serializeNode(node: NodeRow): StoryNode {
     ...(node.video_url ? { videoUrl: node.video_url } : {}),
     position: { x: 0, y: 0 },
     origin: "generated",
-    startImageSource: "none",
+    // A generated scene almost always continues from the shot the player just watched,
+    // so this is reported as stored rather than assumed to be "none".
+    startImageSource: node.start_image_source,
+    ...(node.start_image_from_node_id
+      ? { startImageFromNodeId: node.start_image_from_node_id }
+      : {}),
     endImageSource: "none",
   };
 }
@@ -268,6 +277,16 @@ async function offerBranches(
     .maybeSingle();
   if (!node) return NextResponse.json({ error: "Scene not found" }, { status: 404 });
 
+  /*
+   * Extract this scene's closing frame while the player is still watching it.
+   *
+   * The next scene opens on that frame, and this call is the one the player does not
+   * wait for — it runs against the shot on screen. Doing it here takes a fal round trip
+   * out of the gap between a choice and the video behind it, and the frame is cached on
+   * the scene, so a player who quits here has warmed it for everyone who does not.
+   */
+  const warmFrame = ensureLastFrame(admin, game.id, nodeId);
+
   const existingQuery = () =>
     admin
       .from("generated_choices")
@@ -277,6 +296,9 @@ async function offerBranches(
 
   const { data: existing } = await existingQuery();
   if ((existing?.length ?? 0) >= MIN_BRANCHES) {
+    // Awaited rather than left running: on a serverless host the work stops when the
+    // response does, and a half-finished extraction is one the next request repeats.
+    await warmFrame;
     return NextResponse.json({ choices: (existing ?? []).map(serializeChoice) });
   }
 
@@ -304,7 +326,7 @@ async function offerBranches(
     { onConflict: "from_node_id,label_key", ignoreDuplicates: true },
   );
 
-  const { data: refreshed } = await existingQuery();
+  const [{ data: refreshed }] = await Promise.all([existingQuery(), warmFrame]);
   return NextResponse.json({ choices: (refreshed ?? []).map(serializeChoice) });
 }
 
@@ -346,14 +368,36 @@ async function advance(
   const limited = await overSpendLimit(admin, userId, game.id);
   if (limited) return NextResponse.json({ error: limited }, { status: 429 });
 
+  /*
+   * Continuity, started before the writing rather than after it.
+   *
+   * The new shot opens on the frame the scene behind it closed on, which is what keeps a
+   * generated stretch looking like one continuous story instead of a run of unrelated
+   * five-second clips. Extraction is a round trip to fal, so it is kicked off here and
+   * collected once the scene has been written — the two have nothing to say to each other
+   * and the player is waiting on both.
+   *
+   * The frame is cached on the scene it came from, so this is not wasted work even if
+   * this request goes on to lose the race for the branch below.
+   */
+  const lastFramePromise = ensureLastFrame(admin, game.id, choice.from_node_id);
+
   const context = await loadContext(admin, game, pathNodeIds);
   let scene;
   try {
     scene = await generateScene(context, choice.label, choice.hint);
   } catch (error) {
     console.error("Infinite mode could not write a scene", error);
+    // Settled before returning, for the same reason it is awaited on the cached-branch
+    // path: the host stops the work when the response does, and an extraction killed
+    // half-way is a fal call paid for twice and a stored frame nothing points at.
+    await lastFramePromise;
     return NextResponse.json({ error: "The story could not think of what comes next." }, { status: 502 });
   }
+
+  // Never fatal: `ensureLastFrame` reports a failure as no frame, and a scene generated
+  // from its prompt alone is a better answer for a waiting player than an error.
+  const startImageUrl = await lastFramePromise;
 
   const nodeId = randomUUID();
   const { error: insertError } = await admin.from("story_nodes").insert({
@@ -367,6 +411,11 @@ async function advance(
     tone: scene.tone,
     duration_seconds: INFINITE_DURATION_SECONDS,
     render_status: "queued",
+    // Recorded as inheritance rather than as an upload, so the scene says what it opened
+    // on and where that came from — the same shape an authored chained scene has.
+    ...(startImageUrl
+      ? { start_image_source: "inherit", start_image_from_node_id: choice.from_node_id }
+      : {}),
   });
   if (insertError) {
     console.error("Infinite mode could not store a scene", insertError);
@@ -394,6 +443,7 @@ async function advance(
     nodeId,
     prompt: scene.videoPrompt,
     requestedBy: userId,
+    ...(startImageUrl ? { startImageUrl } : {}),
   });
   if (!render.ok) {
     // Hand the branch back. Left reserved, it would point at a scene that never renders,
@@ -422,7 +472,7 @@ async function respondWithNode(
     .eq("game_id", gameId)
     .maybeSingle();
   if (!data) return NextResponse.json({ error: "Scene not found" }, { status: 404 });
-  return NextResponse.json({ node: serializeNode(data as NodeRow) });
+  return NextResponse.json({ node: serializeNode(data as unknown as NodeRow) });
 }
 
 /**
